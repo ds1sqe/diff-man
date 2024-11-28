@@ -7,7 +7,7 @@ description = "A simple diff utility lib"
 repository = "https://github.com/ds1sqe/diff-man"
 license = "MIT OR Apache-2.0"
 keywords = ["diff"]
-categories =["Text processing"]
+categories =["text-processing","parsing"]
 
 [dependencies]
 
