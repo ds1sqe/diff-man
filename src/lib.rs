@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, str::FromStr};
 
 const DIFF_SIGN_LINE_ADDED: &str = "+";
 const DIFF_SIGN_LINE_DELETED: &str = "-";
@@ -7,20 +7,24 @@ const DIFF_SIGN_HEADER_ORIGIN: &str = "---";
 const DIFF_SIGN_HEADER_NEW: &str = "+++";
 const DIFF_SIGN_HUNK: &str = "@@";
 
+#[derive(Debug)]
 pub enum DiffFormat {
     GitUdiff,
 }
 
+#[derive(Debug)]
 pub struct DiffComposition {
     pub format: DiffFormat,
     pub diff: Vec<Diff>,
 }
+#[derive(Debug)]
 pub struct Diff {
+    pub command: Option<String>,
+    pub index: Option<String>, // TODO: type this
     pub path: PathBuf,
     pub hunk: Vec<DiffHunk>,
-    pub index: Option<String>, // TODO: type this
-    pub command: Option<String>,
 }
+#[derive(Debug)]
 pub struct DiffHunk {
     pub old_line: u64,
     pub old_len: u64,
@@ -28,26 +32,27 @@ pub struct DiffHunk {
     pub new_len: u64,
     pub change: Vec<LineChange>,
 }
+#[derive(Debug)]
 pub struct LineChange {
-    kind: ChangeKind,
+    kind: Change,
     content: String,
 }
 
-#[derive(Debug)]
-pub enum ChangeKind {
+#[derive(Debug, Copy, Clone)]
+pub enum Change {
     Default,
     Added,
     Deleted,
 }
 
 #[derive(Debug)]
-pub enum LineStart {
+pub enum Line {
     Command,
     Index,
     OrignPath,
     NewPath,
     Hunk,
-    LineChange(ChangeKind),
+    LineChange(Change),
     Unknown,
 }
 
@@ -60,106 +65,281 @@ enum ParserState {
     OriginPath,
     NewPath,
     Hunk,
-    LineChange,
+    LineChange(Change),
 }
 
 impl Parser {
-    fn parse_line_start(state: &ParserState, line: &str) -> LineStart {
+    fn parse_line_kind(state: &ParserState, line: &str) -> Line {
         match state {
             ParserState::Init => {
                 if line.starts_with("diff") {
-                    LineStart::Command
+                    Line::Command
                 } else {
-                    LineStart::Unknown
+                    Line::Unknown
                 }
             }
             ParserState::Command => {
                 if line.starts_with("index") {
-                    LineStart::Index
+                    Line::Index
                 } else if line.starts_with(DIFF_SIGN_HEADER_ORIGIN) {
-                    LineStart::OrignPath
+                    Line::OrignPath
                 } else {
-                    LineStart::Unknown
+                    Line::Unknown
                 }
             }
             ParserState::Index => {
                 if line.starts_with(DIFF_SIGN_HEADER_ORIGIN) {
-                    LineStart::OrignPath
+                    Line::OrignPath
                 } else {
-                    LineStart::Unknown
+                    Line::Unknown
                 }
             }
             ParserState::OriginPath => {
                 if line.starts_with(DIFF_SIGN_HEADER_NEW) {
-                    LineStart::NewPath
+                    Line::NewPath
                 } else {
-                    LineStart::Unknown
+                    Line::Unknown
                 }
             }
             ParserState::NewPath => {
                 if line.starts_with(DIFF_SIGN_HUNK) {
-                    LineStart::Hunk
+                    Line::Hunk
                 } else {
-                    LineStart::Unknown
+                    Line::Unknown
                 }
             }
             ParserState::Hunk => match line.split_at(1) {
-                (DIFF_SIGN_LINE_ADDED, _) => {
-                    LineStart::LineChange(ChangeKind::Added)
-                }
+                (DIFF_SIGN_LINE_ADDED, _) => Line::LineChange(Change::Added),
                 (DIFF_SIGN_LINE_DEFAULT, _) => {
-                    LineStart::LineChange(ChangeKind::Default)
+                    Line::LineChange(Change::Default)
                 }
                 (DIFF_SIGN_LINE_DELETED, _) => {
-                    LineStart::LineChange(ChangeKind::Deleted)
+                    Line::LineChange(Change::Deleted)
                 }
-                _ => LineStart::Unknown,
+                _ => Line::Unknown,
             },
-            ParserState::LineChange => {
+            ParserState::LineChange(_) => {
                 if line.starts_with("diff") {
-                    LineStart::Command
+                    Line::Command
                 } else if line.starts_with("index") {
-                    LineStart::Index
+                    Line::Index
                 } else if line.starts_with(DIFF_SIGN_HEADER_ORIGIN) {
-                    LineStart::OrignPath
+                    Line::OrignPath
                 } else if line.starts_with(DIFF_SIGN_HUNK) {
-                    LineStart::Hunk
+                    Line::Hunk
                 } else {
                     match line.split_at(1) {
                         (DIFF_SIGN_LINE_ADDED, _) => {
-                            LineStart::LineChange(ChangeKind::Added)
+                            Line::LineChange(Change::Added)
                         }
                         (DIFF_SIGN_LINE_DEFAULT, _) => {
-                            LineStart::LineChange(ChangeKind::Default)
+                            Line::LineChange(Change::Default)
                         }
                         (DIFF_SIGN_LINE_DELETED, _) => {
-                            LineStart::LineChange(ChangeKind::Deleted)
+                            Line::LineChange(Change::Deleted)
                         }
-                        _ => LineStart::Unknown,
+                        _ => Line::Unknown,
                     }
                 }
             }
         }
     }
 
-    fn parse_git_udiff(src: &str) -> DiffComposition {
+    fn parse_line_content<'line>(line: &'line str, kind: &Line) -> &'line str {
+        match kind {
+            Line::Command => line,
+            Line::Index => line
+                .strip_prefix("index ")
+                .expect("expect line start with `index `"),
+            Line::OrignPath => line
+                .strip_prefix("--- ")
+                .expect("expect line start with `--- `"),
+            Line::NewPath => line
+                .strip_prefix("+++ ")
+                .expect("expect line start with `+++ `"),
+            Line::Hunk => {
+                let end_offset =
+                    line.find(" @@").expect("cannot find hunk end with ` @@`");
+                line.split_at(end_offset)
+                    .0
+                    .strip_prefix("@@ ")
+                    .expect("expect line start with `@@ `")
+            }
+            Line::LineChange(_) => line.split_at(1).1,
+            Line::Unknown => panic!("unknown line start"),
+        }
+    }
+
+    pub fn parse_git_udiff(src: &str) -> DiffComposition {
         let mut state = ParserState::Init;
         // State
         //  command     diff --git a/tests/vm.rs b/tests/vm.rs
         //  index       index 90d5af1..30044cb 100644
         //  old_path    --- a/tests/vm.rs
         //  new_path    +++ b/tests/vm.rs
-        //  hunk        @@ -16,7 +16,9 @@
+        //  hunk        @@ -16,7 +16,9 @@ scope..
         //      linechange... |+|
         //      linechange... |-|
         //      linechange... | |
         //      *hunk        @@ ...
+        let mut diffcom = DiffComposition {
+            format: DiffFormat::GitUdiff,
+            diff: Vec::new(),
+        };
+
+        let mut diff_cur: Option<Diff> = None;
+        let mut hunk_cur: Option<DiffHunk> = None;
 
         for line in src.lines() {
-            let linestart = Self::parse_line_start(&state, line);
-            todo!()
+            let tag = Self::parse_line_kind(&state, line);
+            state = match &tag {
+                crate::Line::Command => ParserState::Command,
+                crate::Line::Index => ParserState::Index,
+                crate::Line::OrignPath => ParserState::OriginPath,
+                crate::Line::NewPath => ParserState::NewPath,
+                crate::Line::Hunk => ParserState::Hunk,
+                crate::Line::LineChange(change_kind) => {
+                    ParserState::LineChange(*change_kind)
+                }
+                crate::Line::Unknown => panic!("Unknown line start"),
+            };
+            let content = Self::parse_line_content(line, &tag);
+            match state {
+                ParserState::Init => unreachable!(),
+                ParserState::Command => {
+                    if diff_cur.is_some() {
+                        diffcom.diff.push(diff_cur.take().unwrap());
+                    }
+                    let (file_path_a, file_path_b) = content
+                        .strip_prefix("diff --git ")
+                        .expect("expect to command start with `diff --git `")
+                        .split_once(' ')
+                        .expect("cannot split command's arguments");
+                    let file_path_a = file_path_a
+                        .strip_prefix("a/")
+                        .expect("expect to path_a start with `a/`");
+                    let file_path_b = file_path_b
+                        .strip_prefix("b/")
+                        .expect("expect to path_a start with `b/`");
+                    assert_eq!(file_path_a, file_path_b);
+                    let path = PathBuf::from_str(file_path_a)
+                        .expect("cannot parse file_path");
+
+                    diff_cur = Some(Diff {
+                        path,
+                        hunk: Vec::new(),
+                        command: Some(content.to_string()),
+                        index: None,
+                    });
+                }
+                ParserState::Index => match &mut diff_cur {
+                    Some(cur) => {
+                        if cur.index.is_some() {
+                            panic!(
+                                "there is index in current diff {:?}",
+                                &diff_cur
+                            )
+                        } else {
+                            cur.index = Some(content.to_string())
+                        }
+                    }
+                    None => {
+                        panic!("there is no current diff {:?}", &diff_cur)
+                    }
+                },
+                ParserState::OriginPath => match &diff_cur {
+                    Some(d) => {
+                        assert_eq!(
+                            d.path
+                                .to_str()
+                                .expect("cannot convert diff path to str"),
+                            content
+                                .strip_prefix("a/")
+                                .expect("old file path not start with `a/`")
+                        )
+                    }
+                    None => {
+                        panic!("there is no current diff {:?}", &diff_cur)
+                    }
+                },
+                ParserState::NewPath => match &diff_cur {
+                    Some(d) => {
+                        assert_eq!(
+                            d.path
+                                .to_str()
+                                .expect("cannot convert diff path to str"),
+                            content
+                                .strip_prefix("b/")
+                                .expect("old file path not start with `b/`")
+                        )
+                    }
+                    None => {
+                        panic!("there is no current diff {:?}", &diff_cur)
+                    }
+                },
+                ParserState::Hunk => match &mut diff_cur {
+                    Some(dc) => {
+                        if let Some(hunk_before) = hunk_cur.take() {
+                            dc.hunk.push(hunk_before)
+                        }
+                        let (old, new) = content
+                            .split_once(' ')
+                            .expect("there is no space in hunk line");
+                        let (old_line, old_len) = old
+                            .split_once(',')
+                            .expect("cannot split hunk old range with `,`");
+                        let (new_line, new_len) = new
+                            .split_once(',')
+                            .expect("cannot split hunk new range with `,`");
+                        let old_line = old_line
+                            .strip_prefix('-')
+                            .expect("cannot strip `-` of old_line")
+                            .parse::<u64>()
+                            .expect("cannot parse old_line");
+                        let old_len = old_len
+                            .parse::<u64>()
+                            .expect("cannot parse old_len");
+                        let new_line = new_line
+                            .strip_prefix('+')
+                            .expect("cannot strip `+` of new_line")
+                            .parse::<u64>()
+                            .expect("cannot parse new_line");
+                        let new_len = new_len
+                            .parse::<u64>()
+                            .expect("cannot parse new_len");
+
+                        hunk_cur = Some(DiffHunk {
+                            old_line,
+                            old_len,
+                            new_line,
+                            new_len,
+                            change: Vec::new(),
+                        });
+                    }
+                    None => {
+                        panic!("there is no current diff {:?}", &diff_cur)
+                    }
+                },
+                ParserState::LineChange(kind) => match &mut hunk_cur {
+                    Some(h) => {
+                        let change = LineChange {
+                            kind,
+                            content: content.to_string(),
+                        };
+                        h.change.push(change)
+                    }
+                    None => {
+                        panic!(
+                            "there is no current hunk. current diff {:?}",
+                            &diff_cur
+                        )
+                    }
+                },
+            }
         }
-        todo!()
+
+        diffcom.diff.push(diff_cur.take().unwrap());
+        diffcom
     }
 }
 
@@ -170,6 +350,7 @@ impl DiffManager {
     }
 }
 
+#[cfg(test)]
 mod test {
     use core::panic;
 
@@ -214,20 +395,26 @@ index 90d5af1..30044cb 100644
     fn test_parse_linestart() {
         let mut state = ParserState::Init;
         for line in short_test_data.lines() {
-            let tag = Parser::parse_line_start(&state, line);
+            let tag = Parser::parse_line_kind(&state, line);
             state = match &tag {
-                crate::LineStart::Command => ParserState::Command,
-                crate::LineStart::Index => ParserState::Index,
-                crate::LineStart::OrignPath => ParserState::OriginPath,
-                crate::LineStart::NewPath => ParserState::NewPath,
-                crate::LineStart::Hunk => ParserState::Hunk,
-                crate::LineStart::LineChange(change_kind) => {
-                    ParserState::LineChange
+                crate::Line::Command => ParserState::Command,
+                crate::Line::Index => ParserState::Index,
+                crate::Line::OrignPath => ParserState::OriginPath,
+                crate::Line::NewPath => ParserState::NewPath,
+                crate::Line::Hunk => ParserState::Hunk,
+                crate::Line::LineChange(change_kind) => {
+                    ParserState::LineChange(*change_kind)
                 }
-                crate::LineStart::Unknown => panic!("Unknown line start"),
+                crate::Line::Unknown => panic!("Unknown line start"),
             };
 
             println!("[S:{:?}] [T:{:?}] -- L>{}", &state, &tag, &line);
         }
+    }
+
+    #[test]
+    fn test_parse_udiff() {
+        let com = Parser::parse_git_udiff(short_test_data);
+        println!("{:#?}", com);
     }
 }
