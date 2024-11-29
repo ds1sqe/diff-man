@@ -15,6 +15,19 @@ enum ParserState {
     LineChange(Change),
 }
 
+#[derive(Debug)]
+pub struct ParseError {
+    kind: ParseErrorKind,
+    reason: String,
+    line: String,
+}
+#[derive(Debug)]
+pub enum ParseErrorKind {
+    InvalidLineStart,
+    ExpectationFailed,
+    InvalidLine,
+}
+
 impl Parser {
     fn parse_line_kind(state: &ParserState, line: &str) -> Line {
         match state {
@@ -92,32 +105,57 @@ impl Parser {
         }
     }
 
-    fn parse_line_content<'line>(line: &'line str, kind: &Line) -> &'line str {
-        match kind {
+    fn parse_line_content<'line>(
+        line: &'line str,
+        kind: &Line,
+    ) -> Result<&'line str, ParseError> {
+        let content = match kind {
             Line::Command => line,
-            Line::Index => line
-                .strip_prefix("index ")
-                .expect("expect line start with `index `"),
-            Line::OrignPath => line
-                .strip_prefix("--- ")
-                .expect("expect line start with `--- `"),
-            Line::NewPath => line
-                .strip_prefix("+++ ")
-                .expect("expect line start with `+++ `"),
+            Line::Index => {
+                line.strip_prefix("index ").ok_or_else(|| ParseError {
+                    kind: ParseErrorKind::ExpectationFailed,
+                    reason: "expect line start with `index `".to_string(),
+                    line: line.to_string(),
+                })?
+            }
+            Line::OrignPath => {
+                line.strip_prefix("--- ").ok_or_else(|| ParseError {
+                    kind: ParseErrorKind::ExpectationFailed,
+                    reason: "expect line start with `--- `".to_string(),
+                    line: line.to_string(),
+                })?
+            }
+            Line::NewPath => {
+                line.strip_prefix("+++ ").ok_or_else(|| ParseError {
+                    kind: ParseErrorKind::ExpectationFailed,
+                    reason: "expect line start with `+++ `".to_string(),
+                    line: line.to_string(),
+                })?
+            }
             Line::Hunk => {
                 let end_offset =
-                    line.find(" @@").expect("cannot find hunk end with ` @@`");
-                line.split_at(end_offset)
-                    .0
-                    .strip_prefix("@@ ")
-                    .expect("expect line start with `@@ `")
+                    line.find(" @@").ok_or_else(|| ParseError {
+                        kind: ParseErrorKind::ExpectationFailed,
+                        reason: "cannot find hunk end with ` @@`".to_string(),
+                        line: line.to_string(),
+                    })?;
+                line.split_at(end_offset).0.strip_prefix("@@ ").ok_or_else(
+                    || ParseError {
+                        kind: ParseErrorKind::ExpectationFailed,
+                        reason: "expect line start with `@@ `".to_string(),
+                        line: line.to_string(),
+                    },
+                )?
             }
             Line::LineChange(_) => line.split_at(1).1,
+            // this should be unreachable
             Line::Unknown => panic!("unknown line start"),
-        }
+        };
+
+        Ok(content)
     }
 
-    pub fn parse_git_udiff(src: &str) -> DiffComposition {
+    pub fn parse_git_udiff(src: &str) -> Result<DiffComposition, ParseError> {
         let mut state = ParserState::Init;
         // State
         //  command     diff --git a/tests/vm.rs b/tests/vm.rs
@@ -148,9 +186,13 @@ impl Parser {
                 Line::LineChange(change_kind) => {
                     ParserState::LineChange(*change_kind)
                 }
-                Line::Unknown => panic!("Unknown line start"),
+                Line::Unknown => Err(ParseError {
+                    kind: ParseErrorKind::InvalidLineStart,
+                    reason: "line starting with invalid token".to_string(),
+                    line: line.to_string(),
+                })?,
             };
-            let content = Self::parse_line_content(line, &tag);
+            let content = Self::parse_line_content(line, &tag)?;
             match state {
                 ParserState::Init => unreachable!(),
                 ParserState::Command => {
@@ -159,18 +201,47 @@ impl Parser {
                     }
                     let (file_path_a, file_path_b) = content
                         .strip_prefix("diff --git ")
-                        .expect("expect to command start with `diff --git `")
-                        .split_once(' ')
-                        .expect("cannot split command's arguments");
+                        .and_then(|s|s.split_once(' '))
+                        .ok_or_else(||{
+                            ParseError{
+                                kind:ParseErrorKind::ExpectationFailed,
+                                reason:"lines not starting with `diff --git ` or cannot split command's arguments".to_string(
+                                ),
+                                line:line.to_string(),
+                            }
+                        })?;
                     let file_path_a = file_path_a
                         .strip_prefix("a/")
-                        .expect("expect to path_a start with `a/`");
+                        .ok_or_else(|| ParseError {
+                            kind: ParseErrorKind::ExpectationFailed,
+                            reason: "expect to path_a start with `a/`"
+                                .to_string(),
+                            line: line.to_string(),
+                        })?;
+
                     let file_path_b = file_path_b
                         .strip_prefix("b/")
-                        .expect("expect to path_a start with `b/`");
-                    assert_eq!(file_path_a, file_path_b);
-                    let path = PathBuf::from_str(file_path_a)
-                        .expect("cannot parse file_path");
+                        .ok_or_else(|| ParseError {
+                            kind: ParseErrorKind::ExpectationFailed,
+                            reason: "expect to path_a start with `b/`"
+                                .to_string(),
+                            line: line.to_string(),
+                        })?;
+                    if file_path_a != file_path_b {
+                        Err(ParseError {
+                            kind: ParseErrorKind::ExpectationFailed,
+                            reason: "file path a and b are different"
+                                .to_string(),
+                            line: line.to_string(),
+                        })?;
+                    }
+                    let path = PathBuf::from_str(file_path_a).map_err(|e| {
+                        ParseError {
+                            kind: ParseErrorKind::ExpectationFailed,
+                            reason: format!("cannot parse file_path, {:?}", e),
+                            line: line.to_string(),
+                        }
+                    })?;
 
                     diff_cur = Some(Diff {
                         path,
@@ -182,46 +253,108 @@ impl Parser {
                 ParserState::Index => match &mut diff_cur {
                     Some(cur) => {
                         if cur.index.is_some() {
-                            panic!(
-                                "there is index in current diff {:?}",
-                                &diff_cur
-                            )
+                            Err(ParseError {
+                                kind: ParseErrorKind::InvalidLine,
+                                reason: format!(
+                                    "there is index in current diff {:?}",
+                                    &diff_cur
+                                ),
+                                line: line.to_string(),
+                            })?;
                         } else {
                             cur.index = Some(content.to_string())
                         }
                     }
                     None => {
-                        panic!("there is no current diff {:?}", &diff_cur)
+                        Err(ParseError {
+                            kind: ParseErrorKind::ExpectationFailed,
+                            reason: format!(
+                                "there is no current diff {:?}",
+                                &diff_cur
+                            ),
+                            line: line.to_string(),
+                        })?;
                     }
                 },
                 ParserState::OriginPath => match &diff_cur {
                     Some(d) => {
-                        assert_eq!(
-                            d.path
-                                .to_str()
-                                .expect("cannot convert diff path to str"),
-                            content
-                                .strip_prefix("a/")
-                                .expect("old file path not start with `a/`")
-                        )
+                        let diff_path =
+                            d.path.to_str().ok_or_else(|| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: "cannot convert diff path to str"
+                                    .to_string(),
+                                line: line.to_string(),
+                            })?;
+
+                        let origin_path = content
+                            .strip_prefix("a/")
+                            .ok_or_else(|| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: "old file path not start with `a/`"
+                                    .to_string(),
+                                line: line.to_string(),
+                            })?;
+                        if diff_path != origin_path {
+                            Err(ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: format!(
+                                    "diff path and origin path is different, [diff: {}] [origin: {}]",
+                                    diff_path, origin_path
+                                ),
+                                line: line.to_string(),
+                            })?;
+                        }
                     }
                     None => {
-                        panic!("there is no current diff {:?}", &diff_cur)
+                        Err(ParseError {
+                            kind: ParseErrorKind::ExpectationFailed,
+                            reason: format!(
+                                "there is no current diff {:?}",
+                                &diff_cur
+                            ),
+                            line: line.to_string(),
+                        })?;
                     }
                 },
                 ParserState::NewPath => match &diff_cur {
                     Some(d) => {
-                        assert_eq!(
-                            d.path
-                                .to_str()
-                                .expect("cannot convert diff path to str"),
-                            content
-                                .strip_prefix("b/")
-                                .expect("old file path not start with `b/`")
-                        )
+                        let diff_path =
+                            d.path.to_str().ok_or_else(|| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: "cannot convert diff path to str"
+                                    .to_string(),
+                                line: line.to_string(),
+                            })?;
+
+                        let new_path =
+                            content.strip_prefix("b/").ok_or_else(|| {
+                                ParseError {
+                                    kind: ParseErrorKind::ExpectationFailed,
+                                    reason: "old file path not start with `b/`"
+                                        .to_string(),
+                                    line: line.to_string(),
+                                }
+                            })?;
+                        if diff_path != new_path {
+                            Err(ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: format!(
+                                    "diff path and new path is different, [diff: {}] [new: {}]",
+                                    diff_path, new_path
+                                ),
+                                line: line.to_string(),
+                            })?;
+                        }
                     }
                     None => {
-                        panic!("there is no current diff {:?}", &diff_cur)
+                        Err(ParseError {
+                            kind: ParseErrorKind::ExpectationFailed,
+                            reason: format!(
+                                "there is no current diff {:?}",
+                                &diff_cur
+                            ),
+                            line: line.to_string(),
+                        })?;
                     }
                 },
                 ParserState::Hunk => match &mut diff_cur {
@@ -229,31 +362,86 @@ impl Parser {
                         if let Some(hunk_before) = hunk_cur.take() {
                             dc.hunk.push(hunk_before)
                         }
-                        let (old, new) = content
-                            .split_once(' ')
-                            .expect("there is no space in hunk line");
-                        let (old_line, old_len) = old
-                            .split_once(',')
-                            .expect("cannot split hunk old range with `,`");
-                        let (new_line, new_len) = new
-                            .split_once(',')
-                            .expect("cannot split hunk new range with `,`");
+                        let (old, new) =
+                            content.split_once(' ').ok_or_else(|| {
+                                ParseError {
+                                    kind: ParseErrorKind::ExpectationFailed,
+                                    reason: "there is no space in hunk line"
+                                        .to_string(),
+                                    line: line.to_string(),
+                                }
+                            })?;
+                        let (old_line, old_len) =
+                            old.split_once(',').ok_or_else(|| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: "cannot split hunk old range with `,`"
+                                    .to_string(),
+                                line: line.to_string(),
+                            })?;
+                        let (new_line, new_len) =
+                            new.split_once(',').ok_or_else(|| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: "cannot split hunk new range with `,`"
+                                    .to_string(),
+                                line: line.to_string(),
+                            })?;
+
                         let old_line = old_line
                             .strip_prefix('-')
-                            .expect("cannot strip `-` of old_line")
+                            .ok_or_else(|| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: "cannot strip `-` of old_line"
+                                    .to_string(),
+                                line: line.to_string(),
+                            })?
                             .parse::<usize>()
-                            .expect("cannot parse old_line");
-                        let old_len = old_len
-                            .parse::<usize>()
-                            .expect("cannot parse old_len");
+                            .map_err(|e| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: format!(
+                                    "cannot parse old_line to usize, {:?}",
+                                    e
+                                ),
+                                line: line.to_string(),
+                            })?;
+                        let old_len =
+                            old_len.parse::<usize>().map_err(|e| {
+                                ParseError {
+                                    kind: ParseErrorKind::ExpectationFailed,
+                                    reason: format!(
+                                        "cannot parse old_len to usize, {:?}",
+                                        e
+                                    ),
+                                    line: line.to_string(),
+                                }
+                            })?;
                         let new_line = new_line
                             .strip_prefix('+')
-                            .expect("cannot strip `+` of new_line")
+                            .ok_or_else(|| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: "cannot strip `+` of new_line"
+                                    .to_string(),
+                                line: line.to_string(),
+                            })?
                             .parse::<usize>()
-                            .expect("cannot parse new_line");
-                        let new_len = new_len
-                            .parse::<usize>()
-                            .expect("cannot parse new_len");
+                            .map_err(|e| ParseError {
+                                kind: ParseErrorKind::ExpectationFailed,
+                                reason: format!(
+                                    "cannot parse new_line to usize, {:?}",
+                                    e
+                                ),
+                                line: line.to_string(),
+                            })?;
+                        let new_len =
+                            new_len.parse::<usize>().map_err(|e| {
+                                ParseError {
+                                    kind: ParseErrorKind::ExpectationFailed,
+                                    reason: format!(
+                                        "cannot parse new_len to usize, {:?}",
+                                        e
+                                    ),
+                                    line: line.to_string(),
+                                }
+                            })?;
 
                         hunk_cur = Some(DiffHunk {
                             old_line,
@@ -276,10 +464,14 @@ impl Parser {
                         h.change.push(change)
                     }
                     None => {
-                        panic!(
-                            "there is no current hunk. current diff {:?}",
-                            &diff_cur
-                        )
+                        Err(ParseError {
+                            kind: ParseErrorKind::ExpectationFailed,
+                            reason: format!(
+                                "there is no current hunk. current diff {:?}",
+                                &diff_cur
+                            ),
+                            line: line.to_string(),
+                        })?;
                     }
                 },
             }
@@ -288,16 +480,26 @@ impl Parser {
         if let Some(hunk) = hunk_cur {
             match &mut diff_cur {
                 Some(c) => c.hunk.push(hunk),
-                None => panic!("there is no diff_cur to add hunk"),
+                None => {
+                    Err(ParseError {
+                        kind: ParseErrorKind::ExpectationFailed,
+                        reason: "there is no diff_cur to add hunk".to_string(),
+                        line: "".to_string(),
+                    })?;
+                }
             }
         }
         if let Some(diff) = diff_cur {
             diffcom.diff.push(diff);
         } else {
-            panic!("there is no diff_cur at end")
+            Err(ParseError {
+                kind: ParseErrorKind::ExpectationFailed,
+                reason: "there is no diff_cur at end".to_string(),
+                line: "".to_string(),
+            })?;
         }
 
-        diffcom
+        Ok(diffcom)
     }
 }
 
@@ -368,7 +570,7 @@ index 90d5af1..30044cb 100644
 
     #[test]
     fn test_parse_udiff() {
-        let com = Parser::parse_git_udiff(short_test_data);
+        let com = Parser::parse_git_udiff(short_test_data).unwrap();
         println!("{:#?}", com);
     }
 }

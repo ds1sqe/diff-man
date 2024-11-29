@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -59,29 +59,49 @@ pub enum Line {
     Unknown,
 }
 
-impl DiffComposition {
-    pub fn apply(&self, root: &Path) {
-        for diff in &self.diff {
-            let target_path = root.join(&diff.path);
-            let original =
-                fs::read_to_string(&target_path).expect("cannot read");
-            let after = diff.apply(&original);
-            fs::write(target_path, after).expect("failed to apply");
-        }
-    }
-    pub fn revert(&self, root: &Path) {
-        for diff in &self.diff {
-            let target_path = root.join(&diff.path);
-            let applied =
-                fs::read_to_string(&target_path).expect("cannot read");
-            let after = diff.revert(&applied);
-            fs::write(target_path, after).expect("failed to revert");
+#[derive(Debug)]
+pub struct DiffError {
+    kind: DiffErrorKind,
+    reason: String,
+}
+#[derive(Debug)]
+pub enum DiffErrorKind {
+    IOError(io::Error),
+    InvalidIndex(usize),
+}
+
+impl From<io::Error> for DiffError {
+    fn from(e: io::Error) -> Self {
+        DiffError {
+            kind: DiffErrorKind::IOError(e),
+            reason: "cannot read or write".to_string(),
         }
     }
 }
 
+impl DiffComposition {
+    pub fn apply(&self, root: &Path) -> Result<(), DiffError> {
+        for diff in &self.diff {
+            let target_path = root.join(&diff.path);
+            let original = fs::read_to_string(&target_path)?;
+            let after = diff.apply(&original)?;
+            fs::write(target_path, after)?;
+        }
+        Ok(())
+    }
+    pub fn revert(&self, root: &Path) -> Result<(), DiffError> {
+        for diff in &self.diff {
+            let target_path = root.join(&diff.path);
+            let applied = fs::read_to_string(&target_path)?;
+            let after = diff.revert(&applied)?;
+            fs::write(target_path, after)?;
+        }
+        Ok(())
+    }
+}
+
 impl Diff {
-    pub fn apply(&self, original: &str) -> String {
+    pub fn apply(&self, original: &str) -> Result<String, DiffError> {
         let mut buffer = String::new();
 
         // index of original line
@@ -90,18 +110,22 @@ impl Diff {
 
         for hunk in &self.hunk {
             while oidx < (hunk.old_line - 1) {
-                buffer.push_str(
-                    lines.get(oidx).expect("there is no line in lines"),
-                );
+                buffer.push_str(lines.get(oidx).ok_or_else(|| DiffError {
+                    kind: DiffErrorKind::InvalidIndex(oidx),
+                    reason: format!("cannot get line at {oidx}"),
+                })?);
                 buffer.push('\n');
                 oidx += 1;
             }
             for change in &hunk.change {
                 match change.kind {
                     Change::Default => {
-                        buffer.push_str(
-                            lines.get(oidx).expect("there is no line in lines"),
-                        );
+                        buffer.push_str(lines.get(oidx).ok_or_else(|| {
+                            DiffError {
+                                kind: DiffErrorKind::InvalidIndex(oidx),
+                                reason: format!("cannot get line at {oidx}"),
+                            }
+                        })?);
                         buffer.push('\n');
                         oidx += 1;
                     }
@@ -124,10 +148,10 @@ impl Diff {
             oidx += 1;
         }
 
-        buffer
+        Ok(buffer)
     }
 
-    pub fn revert(&self, applied: &str) -> String {
+    pub fn revert(&self, applied: &str) -> Result<String, DiffError> {
         let mut buffer = String::new();
 
         let mut aidx: usize = 0;
@@ -135,9 +159,10 @@ impl Diff {
 
         for hunk in &self.hunk {
             while aidx < (hunk.new_line - 1) {
-                buffer.push_str(
-                    lines.get(aidx).expect("there is no line in lines"),
-                );
+                buffer.push_str(lines.get(aidx).ok_or_else(|| DiffError {
+                    kind: DiffErrorKind::InvalidIndex(aidx),
+                    reason: format!("cannot get line at {aidx}"),
+                })?);
                 buffer.push('\n');
                 aidx += 1;
             }
@@ -170,7 +195,7 @@ impl Diff {
             aidx += 1;
         }
 
-        buffer
+        Ok(buffer)
     }
 }
 
@@ -191,10 +216,10 @@ mod test {
 
         let diff_file = fs::read_to_string("test_data/simple.diffs").unwrap();
 
-        let com = Parser::parse_git_udiff(&diff_file);
+        let com = Parser::parse_git_udiff(&diff_file).unwrap();
         println!("{:#?}", com);
         let diff = com.diff.first().unwrap();
-        let applied = diff.apply(&original);
+        let applied = diff.apply(&original).unwrap();
 
         println!("<<applied start>>");
         print!("{}", applied);
@@ -217,10 +242,10 @@ mod test {
 
         let diff_file = fs::read_to_string("test_data/middle.diffs").unwrap();
 
-        let com = Parser::parse_git_udiff(&diff_file);
+        let com = Parser::parse_git_udiff(&diff_file).unwrap();
         println!("{:#?}", com);
         let diff = com.diff.first().unwrap();
-        let applied = diff.apply(&original);
+        let applied = diff.apply(&original).unwrap();
 
         println!("<<applied start>>");
         print!("{}", applied);
@@ -243,10 +268,10 @@ mod test {
 
         let diff_file = fs::read_to_string("test_data/simple.diffs").unwrap();
 
-        let com = Parser::parse_git_udiff(&diff_file);
+        let com = Parser::parse_git_udiff(&diff_file).unwrap();
         println!("{:#?}", com);
         let diff = com.diff.first().unwrap();
-        let applied = diff.apply(&original);
+        let applied = diff.apply(&original).unwrap();
 
         println!("<<applied start>>");
         print!("{}", applied);
@@ -258,7 +283,7 @@ mod test {
         println!("<<expected end>>");
 
         assert_eq!(applied.as_str(), expected.as_str());
-        let before = diff.revert(&applied);
+        let before = diff.revert(&applied).unwrap();
         assert_eq!(before.as_str(), original.as_str())
     }
 
@@ -271,10 +296,10 @@ mod test {
 
         let diff_file = fs::read_to_string("test_data/middle.diffs").unwrap();
 
-        let com = Parser::parse_git_udiff(&diff_file);
+        let com = Parser::parse_git_udiff(&diff_file).unwrap();
         println!("{:#?}", com);
         let diff = com.diff.first().unwrap();
-        let applied = diff.apply(&original);
+        let applied = diff.apply(&original).unwrap();
 
         println!("<<applied start>>");
         print!("{}", applied);
@@ -286,7 +311,7 @@ mod test {
         println!("<<expected end>>");
 
         assert_eq!(applied.as_str(), expected.as_str());
-        let before = diff.revert(&applied);
+        let before = diff.revert(&applied).unwrap();
         assert_eq!(before.as_str(), original.as_str())
     }
 
@@ -295,14 +320,14 @@ mod test {
         let diff_file =
             fs::read_to_string("test_data/composition/simple_app.diffs")
                 .unwrap();
-        let com = Parser::parse_git_udiff(&diff_file);
+        let com = Parser::parse_git_udiff(&diff_file).unwrap();
         fs::copy(
             "test_data/simple.before",
             "test_data/composition/simple_app",
         )
         .expect("failed to copy");
         let comp_root = PathBuf::from_str("test_data/composition").unwrap();
-        com.apply(&comp_root);
+        com.apply(&comp_root).unwrap();
         let applied =
             fs::read_to_string("test_data/composition/simple_app").unwrap();
         let expected = fs::read_to_string("test_data/simple.after").unwrap();
@@ -316,7 +341,7 @@ mod test {
         let diff_file =
             fs::read_to_string("test_data/composition/simple_rev.diffs")
                 .unwrap();
-        let com = Parser::parse_git_udiff(&diff_file);
+        let com = Parser::parse_git_udiff(&diff_file).unwrap();
         fs::copy("test_data/simple.after", "test_data/composition/simple_rev")
             .expect("failed to copy");
         let comp_root = PathBuf::from_str("test_data/composition").unwrap();
@@ -334,7 +359,7 @@ mod test {
         let diff_file =
             fs::read_to_string("test_data/composition/middle_app.diffs")
                 .unwrap();
-        let com = Parser::parse_git_udiff(&diff_file);
+        let com = Parser::parse_git_udiff(&diff_file).unwrap();
         fs::copy(
             "test_data/middle.before",
             "test_data/composition/middle_app",
@@ -355,7 +380,7 @@ mod test {
         let diff_file =
             fs::read_to_string("test_data/composition/middle_rev.diffs")
                 .unwrap();
-        let com = Parser::parse_git_udiff(&diff_file);
+        let com = Parser::parse_git_udiff(&diff_file).unwrap();
         fs::copy("test_data/middle.after", "test_data/composition/middle_rev")
             .expect("failed to copy");
         let comp_root = PathBuf::from_str("test_data/composition").unwrap();
