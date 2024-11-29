@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub const DIFF_SIGN_LINE_ADDED: &str = "+";
 pub const DIFF_SIGN_LINE_DELETED: &str = "-";
@@ -60,6 +63,19 @@ impl DiffComposition {
     pub fn apply(&self, root: &Path) {
         for diff in &self.diff {
             let target_path = root.join(&diff.path);
+            let original =
+                fs::read_to_string(&target_path).expect("cannot read");
+            let after = diff.apply(&original);
+            fs::write(target_path, after).expect("failed to apply");
+        }
+    }
+    pub fn revert(&self, root: &Path) {
+        for diff in &self.diff {
+            let target_path = root.join(&diff.path);
+            let applied =
+                fs::read_to_string(&target_path).expect("cannot read");
+            let after = diff.revert(&applied);
+            fs::write(target_path, after).expect("failed to revert");
         }
     }
 }
@@ -160,6 +176,8 @@ impl Diff {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use {core::panic, std::fs};
 
     use crate::{diff::*, parser::Parser};
@@ -270,5 +288,83 @@ mod test {
         assert_eq!(applied.as_str(), expected.as_str());
         let before = diff.revert(&applied);
         assert_eq!(before.as_str(), original.as_str())
+    }
+
+    #[test]
+    fn test_comp_simple_apply() {
+        let diff_file =
+            fs::read_to_string("test_data/composition/simple_app.diffs")
+                .unwrap();
+        let com = Parser::parse_git_udiff(&diff_file);
+        fs::copy(
+            "test_data/simple.before",
+            "test_data/composition/simple_app",
+        )
+        .expect("failed to copy");
+        let comp_root = PathBuf::from_str("test_data/composition").unwrap();
+        com.apply(&comp_root);
+        let applied =
+            fs::read_to_string("test_data/composition/simple_app").unwrap();
+        let expected = fs::read_to_string("test_data/simple.after").unwrap();
+        assert_eq!(applied.as_str(), expected.as_str());
+        fs::remove_file("test_data/composition/simple_app")
+            .expect("failed to remove file");
+    }
+
+    #[test]
+    fn test_comp_simple_revert() {
+        let diff_file =
+            fs::read_to_string("test_data/composition/simple_rev.diffs")
+                .unwrap();
+        let com = Parser::parse_git_udiff(&diff_file);
+        fs::copy("test_data/simple.after", "test_data/composition/simple_rev")
+            .expect("failed to copy");
+        let comp_root = PathBuf::from_str("test_data/composition").unwrap();
+        com.revert(&comp_root);
+        let reverted =
+            fs::read_to_string("test_data/composition/simple_rev").unwrap();
+        let expected = fs::read_to_string("test_data/simple.before").unwrap();
+        assert_eq!(reverted.as_str(), expected.as_str());
+        fs::remove_file("test_data/composition/simple_rev")
+            .expect("failed to remove file");
+    }
+
+    #[test]
+    fn test_comp_middle_apply() {
+        let diff_file =
+            fs::read_to_string("test_data/composition/middle_app.diffs")
+                .unwrap();
+        let com = Parser::parse_git_udiff(&diff_file);
+        fs::copy(
+            "test_data/middle.before",
+            "test_data/composition/middle_app",
+        )
+        .expect("failed to copy");
+        let comp_root = PathBuf::from_str("test_data/composition").unwrap();
+        com.apply(&comp_root);
+        let applied =
+            fs::read_to_string("test_data/composition/middle_app").unwrap();
+        let expected = fs::read_to_string("test_data/middle.after").unwrap();
+        assert_eq!(applied.as_str(), expected.as_str());
+        fs::remove_file("test_data/composition/middle_app")
+            .expect("failed to remove file");
+    }
+
+    #[test]
+    fn test_comp_middle_revert() {
+        let diff_file =
+            fs::read_to_string("test_data/composition/middle_rev.diffs")
+                .unwrap();
+        let com = Parser::parse_git_udiff(&diff_file);
+        fs::copy("test_data/middle.after", "test_data/composition/middle_rev")
+            .expect("failed to copy");
+        let comp_root = PathBuf::from_str("test_data/composition").unwrap();
+        com.revert(&comp_root);
+        let reverted =
+            fs::read_to_string("test_data/composition/middle_rev").unwrap();
+        let expected = fs::read_to_string("test_data/middle.before").unwrap();
+        assert_eq!(reverted.as_str(), expected.as_str());
+        fs::remove_file("test_data/composition/middle_rev")
+            .expect("failed to remove file");
     }
 }
