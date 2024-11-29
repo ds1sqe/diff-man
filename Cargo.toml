@@ -1,6 +1,6 @@
 [package]
 name = "diff-man"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["Kim Dae Up <ds1sqe@mensakorea.org>"]
 description = "A simple diff utility lib"
@@ -9,7 +9,14 @@ license = "MIT OR Apache-2.0"
 keywords = ["diff"]
 categories =["text-processing","parsing"]
 
+[[bin]]
+name = "diff-man"
+path = "src/bin/main.rs"
+
+
 [dependencies]
+clap = {version ="4.5.16" , features = ["cargo" , "derive"] }
+
 
 
 [package.metadata.docs.rs]

@@ -197,7 +197,13 @@ impl Parser {
                 ParserState::Init => unreachable!(),
                 ParserState::Command => {
                     if diff_cur.is_some() {
-                        diffcom.diff.push(diff_cur.take().unwrap());
+                        let mut diff_before = diff_cur.take().unwrap();
+
+                        if hunk_cur.is_some() {
+                            let hunk_before = hunk_cur.take().unwrap();
+                            diff_before.hunk.push(hunk_before);
+                        }
+                        diffcom.diff.push(diff_before);
                     }
                     let (file_path_a, file_path_b) = content
                         .strip_prefix("diff --git ")

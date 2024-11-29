@@ -68,6 +68,7 @@ pub struct DiffError {
 pub enum DiffErrorKind {
     IOError(io::Error),
     InvalidIndex(usize),
+    UnmatchedContent(String, String),
 }
 
 impl From<io::Error> for DiffError {
@@ -170,8 +171,22 @@ impl Diff {
                 match change.kind {
                     Change::Default => {
                         let content =
-                            lines.get(aidx).expect("there is no line in lines");
-                        assert_eq!(&change.content, content);
+                            lines.get(aidx).ok_or_else(|| DiffError {
+                                kind: DiffErrorKind::InvalidIndex(aidx),
+                                reason: format!("cannot get line at {aidx}"),
+                            })?;
+                        if change.content != *content {
+                            Err(DiffError {
+                                kind: DiffErrorKind::UnmatchedContent(
+                                    change.content.to_string(),
+                                    content.to_string(),
+                                ),
+                                reason: format!(
+                                    "(change) : {:?}, line(content) : {}, @line_idx : {aidx}, Buffer:{}, hunk current {:#?}",
+                                    change, content, buffer, hunk
+                                ),
+                            })?;
+                        }
                         buffer.push_str(content);
                         buffer.push('\n');
                         aidx += 1;
