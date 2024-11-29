@@ -1,0 +1,23 @@
+diff --git a/tmp.rs b/tmp.rs
+index 804e316..11cf792 100644
+--- a/tmp.rs
++++ b/tmp.rs
+@@ -8,14 +8,14 @@ pub fn add(a: i32, b: i32) -> i64 {
+     (a + b) as i64
+ }
+ 
+-pub fn sub(a: i32, b: i32) -> i64 {
+-    (a - b) as i64
+-}
+-
+ pub fn mul(a: i32, b: i32) -> i64 {
+     (a * b) as i64
+ }
+ 
++pub fn mods(a: i32, b: i32) -> i64 {
++    (a % b) as i64
++}
++
+ pub fn div(a: i32, b: i32) -> i64 {
+     (a / b) as i64
+ }

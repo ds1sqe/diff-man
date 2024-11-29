@@ -1,0 +1,21 @@
+fn main() {
+    let foo = add(1, 2);
+    println!("Hello, world!");
+    println!("{foo}");
+}
+
+pub fn add(a: i32, b: i32) -> i64 {
+    (a + b) as i64
+}
+
+pub fn mul(a: i32, b: i32) -> i64 {
+    (a * b) as i64
+}
+
+pub fn mods(a: i32, b: i32) -> i64 {
+    (a % b) as i64
+}
+
+pub fn div(a: i32, b: i32) -> i64 {
+    (a / b) as i64
+}
