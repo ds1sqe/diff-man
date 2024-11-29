@@ -57,7 +57,11 @@ pub enum Line {
 }
 
 impl DiffComposition {
-    pub fn apply(&self, root: &Path) {}
+    pub fn apply(&self, root: &Path) {
+        for diff in &self.diff {
+            let target_path = root.join(&diff.path);
+        }
+    }
 }
 
 impl Diff {
@@ -97,6 +101,59 @@ impl Diff {
             }
         }
 
+        while oidx < lines.len() {
+            buffer
+                .push_str(lines.get(oidx).expect("there is no line in lines"));
+            buffer.push('\n');
+            oidx += 1;
+        }
+
+        buffer
+    }
+
+    pub fn revert(&self, applied: &str) -> String {
+        let mut buffer = String::new();
+
+        let mut aidx: usize = 0;
+        let lines: Vec<&str> = applied.lines().collect();
+
+        for hunk in &self.hunk {
+            while aidx < (hunk.new_line - 1) {
+                buffer.push_str(
+                    lines.get(aidx).expect("there is no line in lines"),
+                );
+                buffer.push('\n');
+                aidx += 1;
+            }
+            for change in &hunk.change {
+                match change.kind {
+                    Change::Default => {
+                        let content =
+                            lines.get(aidx).expect("there is no line in lines");
+                        assert_eq!(&change.content, content);
+                        buffer.push_str(content);
+                        buffer.push('\n');
+                        aidx += 1;
+                    }
+                    Change::Deleted => {
+                        buffer.push_str(&change.content);
+                        buffer.push('\n');
+                    }
+                    Change::Added => {
+                        aidx += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        while aidx < lines.len() {
+            buffer
+                .push_str(lines.get(aidx).expect("there is no line in lines"));
+            buffer.push('\n');
+            aidx += 1;
+        }
+
         buffer
     }
 }
@@ -108,7 +165,7 @@ mod test {
     use crate::{diff::*, parser::Parser};
 
     #[test]
-    fn test_diff_apply() {
+    fn test_diff_apply_simple() {
         let original = fs::read_to_string("test_data/simple.before").unwrap();
         println!("<<original start>>");
         print!("{}", original);
@@ -131,5 +188,87 @@ mod test {
         println!("<<expected end>>");
 
         assert_eq!(applied.as_str(), expected.as_str())
+    }
+
+    #[test]
+    fn test_diff_apply_middle() {
+        let original = fs::read_to_string("test_data/middle.before").unwrap();
+        println!("<<original start>>");
+        print!("{}", original);
+        println!("<<original end>>");
+
+        let diff_file = fs::read_to_string("test_data/middle.diffs").unwrap();
+
+        let com = Parser::parse_git_udiff(&diff_file);
+        println!("{:#?}", com);
+        let diff = com.diff.first().unwrap();
+        let applied = diff.apply(&original);
+
+        println!("<<applied start>>");
+        print!("{}", applied);
+        println!("<<applied end>>");
+
+        let expected = fs::read_to_string("test_data/middle.after").unwrap();
+        println!("<<expected start>>");
+        print!("{}", expected);
+        println!("<<expected end>>");
+
+        assert_eq!(applied.as_str(), expected.as_str())
+    }
+
+    #[test]
+    fn test_diff_apply_revert_simple() {
+        let original = fs::read_to_string("test_data/simple.before").unwrap();
+        println!("<<original start>>");
+        print!("{}", original);
+        println!("<<original end>>");
+
+        let diff_file = fs::read_to_string("test_data/simple.diffs").unwrap();
+
+        let com = Parser::parse_git_udiff(&diff_file);
+        println!("{:#?}", com);
+        let diff = com.diff.first().unwrap();
+        let applied = diff.apply(&original);
+
+        println!("<<applied start>>");
+        print!("{}", applied);
+        println!("<<applied end>>");
+
+        let expected = fs::read_to_string("test_data/simple.after").unwrap();
+        println!("<<expected start>>");
+        print!("{}", expected);
+        println!("<<expected end>>");
+
+        assert_eq!(applied.as_str(), expected.as_str());
+        let before = diff.revert(&applied);
+        assert_eq!(before.as_str(), original.as_str())
+    }
+
+    #[test]
+    fn test_diff_apply_revert_middle() {
+        let original = fs::read_to_string("test_data/middle.before").unwrap();
+        println!("<<original start>>");
+        print!("{}", original);
+        println!("<<original end>>");
+
+        let diff_file = fs::read_to_string("test_data/middle.diffs").unwrap();
+
+        let com = Parser::parse_git_udiff(&diff_file);
+        println!("{:#?}", com);
+        let diff = com.diff.first().unwrap();
+        let applied = diff.apply(&original);
+
+        println!("<<applied start>>");
+        print!("{}", applied);
+        println!("<<applied end>>");
+
+        let expected = fs::read_to_string("test_data/middle.after").unwrap();
+        println!("<<expected start>>");
+        print!("{}", expected);
+        println!("<<expected end>>");
+
+        assert_eq!(applied.as_str(), expected.as_str());
+        let before = diff.revert(&applied);
+        assert_eq!(before.as_str(), original.as_str())
     }
 }
