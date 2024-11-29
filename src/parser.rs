@@ -229,7 +229,7 @@ impl Parser {
                         .strip_prefix("b/")
                         .ok_or_else(|| ParseError {
                             kind: ParseErrorKind::ExpectationFailed,
-                            reason: "expect to path_a start with `b/`"
+                            reason: "expect to path_b start with `b/`"
                                 .to_string(),
                             line: line.to_string(),
                         })?;
