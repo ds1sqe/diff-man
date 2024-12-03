@@ -3,6 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 pub const DIFF_SIGN_LINE_ADDED: &str = "+";
 pub const DIFF_SIGN_LINE_DELETED: &str = "-";
 pub const DIFF_SIGN_LINE_DEFAULT: &str = " ";
@@ -10,16 +13,38 @@ pub const DIFF_SIGN_HEADER_ORIGIN: &str = "---";
 pub const DIFF_SIGN_HEADER_NEW: &str = "+++";
 pub const DIFF_SIGN_HUNK: &str = "@@";
 
+#[cfg(feature = "serde")]
+#[derive(Serialize, Deserialize, Debug)]
+pub enum DiffFormat {
+    GitUdiff,
+}
+#[cfg(not(feature = "serde"))]
 #[derive(Debug)]
 pub enum DiffFormat {
     GitUdiff,
 }
 
+#[cfg(feature = "serde")]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DiffComposition {
+    pub format: DiffFormat,
+    pub diff: Vec<Diff>,
+}
+#[cfg(not(feature = "serde"))]
 #[derive(Debug)]
 pub struct DiffComposition {
     pub format: DiffFormat,
     pub diff: Vec<Diff>,
 }
+#[cfg(feature = "serde")]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Diff {
+    pub command: Option<String>,
+    pub index: Option<String>, // TODO: type this
+    pub path: PathBuf,
+    pub hunk: Vec<DiffHunk>,
+}
+#[cfg(not(feature = "serde"))]
 #[derive(Debug)]
 pub struct Diff {
     pub command: Option<String>,
@@ -27,6 +52,16 @@ pub struct Diff {
     pub path: PathBuf,
     pub hunk: Vec<DiffHunk>,
 }
+#[cfg(feature = "serde")]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DiffHunk {
+    pub old_line: usize,
+    pub old_len: usize,
+    pub new_line: usize,
+    pub new_len: usize,
+    pub change: Vec<LineChange>,
+}
+#[cfg(not(feature = "serde"))]
 #[derive(Debug)]
 pub struct DiffHunk {
     pub old_line: usize,
@@ -35,12 +70,27 @@ pub struct DiffHunk {
     pub new_len: usize,
     pub change: Vec<LineChange>,
 }
-#[derive(Debug)]
+#[cfg(feature = "serde")]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct LineChange {
     pub kind: Change,
     pub content: String,
 }
 
+#[cfg(not(feature = "serde"))]
+#[derive(Debug)]
+pub struct LineChange {
+    pub kind: Change,
+    pub content: String,
+}
+#[cfg(feature = "serde")]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+pub enum Change {
+    Default,
+    Added,
+    Deleted,
+}
+#[cfg(not(feature = "serde"))]
 #[derive(Debug, Copy, Clone)]
 pub enum Change {
     Default,
@@ -48,6 +98,18 @@ pub enum Change {
     Deleted,
 }
 
+#[cfg(feature = "serde")]
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Line {
+    Command,
+    Index,
+    OrignPath,
+    NewPath,
+    Hunk,
+    LineChange(Change),
+    Unknown,
+}
+#[cfg(not(feature = "serde"))]
 #[derive(Debug)]
 pub enum Line {
     Command,

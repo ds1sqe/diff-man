@@ -1,6 +1,6 @@
 [package]
 name = "diff-man"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 authors = ["Kim Dae Up <ds1sqe@mensakorea.org>"]
 description = "A simple diff utility lib"
@@ -16,8 +16,12 @@ path = "src/bin/main.rs"
 
 [dependencies]
 clap = {version ="4.5.16" , features = ["cargo" , "derive"] }
+serde = { version = "1.0.210", features = ["derive"],optional = true }
 
 
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--document-private-items"]
+
+[features]
+serde = ["dep:serde"]
